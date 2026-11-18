@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include <glm/glm.hpp>
+#include <cstddef>
+#include "Shader.h"
+
 // Laptops with two GPUs: ask the driver for the discrete one (Windows only).
 #ifdef _WIN32
 extern "C" {
@@ -66,6 +70,32 @@ int main()
                 reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
     enableGlDebugOutput();
 
+    struct TriVertex { glm::vec3 position; glm::vec3 color; };
+    const TriVertex triangle[] = {
+    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.2f, 0.2f}},
+    {{ 0.5f, -0.5f, 0.0f}, {0.2f, 1.0f, 0.2f}},
+    {{ 0.0f,  0.5f, 0.0f}, {0.2f, 0.4f, 1.0f}},
+    };
+
+    GLuint triVbo = 0;
+    glCreateBuffers(1, &triVbo);
+    glNamedBufferStorage(triVbo, sizeof(triangle), triangle, 0);
+
+    GLuint triVao = 0;
+    glCreateVertexArrays(1, &triVao);
+    glVertexArrayVertexBuffer(triVao, 0, triVbo, 0, sizeof(TriVertex));   // binding 0 reads triVbo
+    glEnableVertexArrayAttrib(triVao, 0);
+    glVertexArrayAttribFormat(triVao, 0, 3, GL_FLOAT, GL_FALSE, offsetof(TriVertex, position));
+    glVertexArrayAttribBinding(triVao, 0, 0);
+    glEnableVertexArrayAttrib(triVao, 1);
+    glVertexArrayAttribFormat(triVao, 1, 3, GL_FLOAT, GL_FALSE, offsetof(TriVertex, color));
+    glVertexArrayAttribBinding(triVao, 1, 0);
+    glObjectLabel(GL_BUFFER, triVbo, -1, "Triangle vertices");   // names show up in RenderDoc
+    glObjectLabel(GL_VERTEX_ARRAY, triVao, -1, "Triangle VAO");
+
+    GLuint triProgram = loadProgram(ASSET_DIR "shaders/triangle.vert", ASSET_DIR "shaders/triangle.frag");
+    if (!triProgram) return EXIT_FAILURE;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         int width = 0, height = 0;
@@ -79,8 +109,16 @@ int main()
         glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        glUseProgram(triProgram);
+        glBindVertexArray(triVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
         glfwSwapBuffers(window);
     }
+
+    glDeleteProgram(triProgram);
+    glDeleteVertexArrays(1, &triVao);
+    glDeleteBuffers(1, &triVbo);
 
     glfwDestroyWindow(window);
     glfwTerminate();
