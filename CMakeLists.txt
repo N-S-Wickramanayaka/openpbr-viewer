@@ -11,6 +11,7 @@ include(cmake/Dependencies.cmake)
 add_executable(viewer
     src/main.cpp
     src/Shader.cpp
+    src/Texture.cpp
 )
 target_include_directories(viewer PRIVATE src)
 target_link_libraries(viewer PRIVATE glad glfw glm::glm imgui stb)
