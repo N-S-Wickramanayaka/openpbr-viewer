@@ -7,14 +7,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   # lets clangd and other tools understand the code
 
 include(cmake/Dependencies.cmake)
+include(cmake/Assets.cmake)   # downloads the test models into assets/models
 
 add_executable(viewer
     src/main.cpp
+    src/Model.cpp
     src/Shader.cpp
     src/Texture.cpp
 )
 target_include_directories(viewer PRIVATE src)
-target_link_libraries(viewer PRIVATE glad glfw glm::glm imgui stb)
+target_link_libraries(viewer PRIVATE glad glfw glm::glm imgui stb cgltf mikktspace)
 
 # Week 1 shortcut: the exe finds shaders and textures through an absolute path baked in at configure time.
 target_compile_definitions(viewer PRIVATE ASSET_DIR="${PROJECT_SOURCE_DIR}/assets/")

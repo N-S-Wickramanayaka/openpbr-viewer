@@ -43,3 +43,11 @@ target_include_directories(glad PUBLIC ${PROJECT_SOURCE_DIR}/external/glad/inclu
 # stb_image: single header, committed under external/stb
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/external/stb)
+
+# cgltf: glTF 2.0 loader, single header, committed under external/cgltf
+add_library(cgltf INTERFACE)
+target_include_directories(cgltf SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/external/cgltf)
+
+# MikkTSpace: tangent generation, committed under external/mikktspace
+add_library(mikktspace STATIC ${PROJECT_SOURCE_DIR}/external/mikktspace/mikktspace.c)
+target_include_directories(mikktspace SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/external/mikktspace)
