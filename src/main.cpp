@@ -56,8 +56,20 @@ static void enableGlDebugOutput()
 
 static std::string g_droppedFile;   // set when a file is dragged onto the window
 
+// Light settings shown in the UI. Positions scale with the model so any glTF gets sensible defaults.
+struct Lights {
+    float sunAzimuth = glm::radians(45.0f);
+    float sunElevation = glm::radians(50.0f);
+    glm::vec3 sunColor{1.0f};
+    float sunIntensity = 3.0f;
+    glm::vec3 pointPosition{2.0f, 1.5f, 2.0f};
+    glm::vec3 pointColor{1.0f, 0.85f, 0.7f};
+    float pointIntensity = 10.0f;
+    float ambient = 0.3f;
+};
+
 // Loads a model and, only if that worked, replaces the current one and frames the camera on it.
-static bool openModel(const std::string& path, Model& model, OrbitCamera& camera)
+static bool openModel(const std::string& path, Model& model, OrbitCamera& camera, Lights& lights)
 {
     Model loaded;
     if (!loadModel(path, loaded)) {
@@ -70,6 +82,8 @@ static bool openModel(const std::string& path, Model& model, OrbitCamera& camera
     const glm::vec3 center = 0.5f * (model.boundsMin + model.boundsMax);
     const float radius = 0.5f * glm::length(model.boundsMax - model.boundsMin);
     camera.frame(center, radius);
+    lights.pointPosition = center + radius * glm::vec3(1.2f, 1.0f, 1.2f);
+    lights.pointIntensity = 3.0f * glm::dot(lights.pointPosition - center, lights.pointPosition - center);
     return true;
 }
 
@@ -118,9 +132,10 @@ int main(int argc, char** argv)
     glCreateVertexArrays(1, &emptyVao);
 
     OrbitCamera camera;
+    Lights lights;
     Model model;
     const std::string startModel = argc > 1 ? argv[1] : ASSET_DIR "models/DamagedHelmet.glb";
-    if (!openModel(startModel, model, camera)) return EXIT_FAILURE;
+    if (!openModel(startModel, model, camera, lights)) return EXIT_FAILURE;
 
     bool vsync = true;
     int debugView = 0;
@@ -137,7 +152,7 @@ int main(int argc, char** argv)
             continue;
         }
         if (!g_droppedFile.empty()) {
-            openModel(g_droppedFile, model, camera);
+            openModel(g_droppedFile, model, camera, lights);
             g_droppedFile.clear();
         }
 
@@ -160,13 +175,23 @@ int main(int argc, char** argv)
         ImGui::Text("%.1f fps (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
         if (ImGui::Checkbox("VSync", &vsync)) glfwSwapInterval(vsync ? 1 : 0);
         ImGui::TextDisabled("Drop a .glb or .gltf file on the window to open it");
-        if (ImGui::Button("DamagedHelmet")) openModel(ASSET_DIR "models/DamagedHelmet.glb", model, camera);
+        if (ImGui::Button("DamagedHelmet")) openModel(ASSET_DIR "models/DamagedHelmet.glb", model, camera, lights);
         ImGui::SameLine();
-        if (ImGui::Button("MetalRoughSpheres")) openModel(ASSET_DIR "models/MetalRoughSpheres.glb", model, camera);
+        if (ImGui::Button("MetalRoughSpheres"))
+            openModel(ASSET_DIR "models/MetalRoughSpheres.glb", model, camera, lights);
         ImGui::Combo("View", &debugView, "Lit\0Base colour\0Metallic\0Roughness\0Normal\0Occlusion\0Emissive\0UV\0");
         ImGui::SeparatorText("Camera");
         ImGui::SliderFloat("Exposure (EV)", &exposureEV, -6.0f, 6.0f, "%.1f");
         ImGui::Combo("Tone mapper", &toneMapper, "Khronos PBR Neutral\0ACES (Narkowicz)\0None (clamp)\0");
+        ImGui::SeparatorText("Lights");
+        ImGui::SliderAngle("Sun azimuth", &lights.sunAzimuth, -180.0f, 180.0f);
+        ImGui::SliderAngle("Sun elevation", &lights.sunElevation, -90.0f, 90.0f);
+        ImGui::ColorEdit3("Sun colour", &lights.sunColor.x);
+        ImGui::DragFloat("Sun intensity", &lights.sunIntensity, 0.05f, 0.0f, 100.0f);
+        ImGui::DragFloat3("Point position", &lights.pointPosition.x, 0.05f);
+        ImGui::ColorEdit3("Point colour", &lights.pointColor.x);
+        ImGui::DragFloat("Point intensity", &lights.pointIntensity, 0.1f, 0.0f, 10000.0f);
+        ImGui::DragFloat("Ambient", &lights.ambient, 0.005f, 0.0f, 10.0f);
         ImGui::End();
 
         // ---- Scene pass: draw the model into the HDR target in linear light ----
@@ -184,6 +209,14 @@ int main(int argc, char** argv)
         const glm::mat4 viewProj = camera.projection(float(width) / float(height)) * camera.view();
         glProgramUniformMatrix4fv(pbrProgram, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
         glProgramUniform1i(pbrProgram, 9, debugView);
+        const glm::vec3 sunDir(std::cos(lights.sunElevation) * std::sin(lights.sunAzimuth), std::sin(lights.sunElevation),
+                               std::cos(lights.sunElevation) * std::cos(lights.sunAzimuth));
+        glProgramUniform3fv(pbrProgram, 10, 1, glm::value_ptr(camera.position()));
+        glProgramUniform3fv(pbrProgram, 11, 1, glm::value_ptr(sunDir));
+        glProgramUniform3fv(pbrProgram, 12, 1, glm::value_ptr(lights.sunColor * lights.sunIntensity));
+        glProgramUniform3fv(pbrProgram, 13, 1, glm::value_ptr(lights.pointPosition));
+        glProgramUniform3fv(pbrProgram, 14, 1, glm::value_ptr(lights.pointColor * lights.pointIntensity));
+        glProgramUniform3fv(pbrProgram, 15, 1, glm::value_ptr(glm::vec3(lights.ambient)));
 
         for (const Draw& draw : model.draws) {
             const Primitive& prim = model.primitives[draw.primitive];
