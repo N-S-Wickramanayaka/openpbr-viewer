@@ -1,4 +1,5 @@
 #include "Model.h"
+#include "Texture.h"
 
 #define CGLTF_IMPLEMENTATION   // in exactly one .cpp file
 #include <cgltf.h>
@@ -12,6 +13,8 @@
 #include <limits>
 #include <numeric>
 #include <utility>
+#include <cstring>
+#include <map>
 
 // ---------- Tangents ----------
 
@@ -118,6 +121,74 @@ static bool loadPrimitive(const cgltf_primitive& prim, Primitive& out)
     return true;
 }
 
+// ---------- Textures and materials ----------
+
+struct TextureCache {
+    std::map<std::pair<const cgltf_image*, bool>, GLuint> loaded;   // (image, srgb) -> texture
+    std::string folder;                                              // for images stored as separate files
+};
+
+static GLuint loadGltfTexture(const cgltf_texture_view& view, bool srgb, TextureCache& cache, Model& model)
+{
+    if (!view.texture || !view.texture->image) return 0;
+    const cgltf_image* image = view.texture->image;
+
+    auto key = std::make_pair(image, srgb);
+    if (auto it = cache.loaded.find(key); it != cache.loaded.end()) return it->second;
+
+    const char* label = image->name ? image->name : (image->uri ? image->uri : "glTF image");
+    GLuint tex = 0;
+    if (image->buffer_view) {   // embedded, as in .glb files
+        tex = loadTexture2DFromMemory(cgltf_buffer_view_data(image->buffer_view), image->buffer_view->size, srgb, label);
+    } else if (image->uri && std::strncmp(image->uri, "data:", 5) != 0) {   // a separate file next to the .gltf
+        std::string uri = image->uri;
+        uri.resize(cgltf_decode_uri(uri.data()));   // turns %20 into spaces
+        tex = loadTexture2D(cache.folder + uri, srgb, false);
+    } else {
+        std::fprintf(stderr, "Skipping %s: images in data URIs are not supported yet\n", label);
+    }
+
+    if (tex && view.texture->sampler) {   // glTF uses OpenGL's enum values, so they pass straight through
+        const cgltf_sampler& s = *view.texture->sampler;
+        if (s.min_filter != cgltf_filter_type_undefined) glTextureParameteri(tex, GL_TEXTURE_MIN_FILTER, s.min_filter);
+        if (s.mag_filter != cgltf_filter_type_undefined) glTextureParameteri(tex, GL_TEXTURE_MAG_FILTER, s.mag_filter);
+        glTextureParameteri(tex, GL_TEXTURE_WRAP_S, s.wrap_s);
+        glTextureParameteri(tex, GL_TEXTURE_WRAP_T, s.wrap_t);
+    }
+
+    cache.loaded[key] = tex;
+    if (tex) model.textures.push_back(tex);
+    return tex;
+}
+
+static Material loadMaterial(const cgltf_material& m, TextureCache& cache, Model& model, GLuint white, GLuint flatNormal)
+{
+    Material mat;
+    if (m.has_pbr_metallic_roughness) {
+        const cgltf_pbr_metallic_roughness& pbr = m.pbr_metallic_roughness;
+        mat.baseColorFactor = glm::make_vec4(pbr.base_color_factor);
+        mat.metallicFactor = pbr.metallic_factor;
+        mat.roughnessFactor = pbr.roughness_factor;
+        mat.baseColorTex = loadGltfTexture(pbr.base_color_texture, true, cache, model);
+        mat.metallicRoughnessTex = loadGltfTexture(pbr.metallic_roughness_texture, false, cache, model);
+    }
+    mat.emissiveFactor = glm::make_vec3(m.emissive_factor);
+    mat.emissiveTex = loadGltfTexture(m.emissive_texture, true, cache, model);
+    mat.normalTex = loadGltfTexture(m.normal_texture, false, cache, model);
+    mat.occlusionTex = loadGltfTexture(m.occlusion_texture, false, cache, model);
+    if (m.normal_texture.texture) mat.normalScale = m.normal_texture.scale;
+    if (m.occlusion_texture.texture) mat.occlusionStrength = m.occlusion_texture.scale;
+    mat.doubleSided = m.double_sided;
+
+    // Fill empty slots: white leaves the factors unchanged, the flat normal leaves the surface normal unchanged.
+    if (!mat.baseColorTex) mat.baseColorTex = white;
+    if (!mat.metallicRoughnessTex) mat.metallicRoughnessTex = white;
+    if (!mat.occlusionTex) mat.occlusionTex = white;
+    if (!mat.emissiveTex) mat.emissiveTex = white;
+    if (!mat.normalTex) mat.normalTex = flatNormal;
+    return mat;
+}
+
 // ---------- Model ----------
 
 bool loadModel(const std::string& path, Model& model)
@@ -135,6 +206,17 @@ bool loadModel(const std::string& path, Model& model)
     }
 
     model = Model{};
+        const GLuint white = createSolidTexture(255, 255, 255, 255, "Default white");
+    const GLuint flatNormal = createSolidTexture(128, 128, 255, 255, "Default flat normal");
+    model.textures = {white, flatNormal};
+    model.defaultMaterial.baseColorTex = model.defaultMaterial.metallicRoughnessTex = white;
+    model.defaultMaterial.occlusionTex = model.defaultMaterial.emissiveTex = white;
+    model.defaultMaterial.normalTex = flatNormal;
+
+    TextureCache cache;
+    cache.folder = path.substr(0, path.find_last_of("/\\") + 1);
+    for (cgltf_size i = 0; i < data->materials_count; ++i)
+        model.materials.push_back(loadMaterial(data->materials[i], cache, model, white, flatNormal));
     // Upload every mesh once; remember where each mesh's primitives start.
     std::vector<std::pair<int, int>> meshRanges;   // (first primitive, count) per mesh
     for (cgltf_size m = 0; m < data->meshes_count; ++m) {

@@ -14,6 +14,7 @@ add_executable(viewer
     src/Model.cpp
     src/Shader.cpp
     src/Texture.cpp
+    src/HdrTarget.cpp
 )
 target_include_directories(viewer PRIVATE src)
 target_link_libraries(viewer PRIVATE glad glfw glm::glm imgui stb cgltf mikktspace)
@@ -26,4 +27,10 @@ if(MSVC)
     set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT viewer)
 else()
     target_compile_options(viewer PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# MinGW: build the GCC runtime (libstdc++, libgcc, winpthread) into viewer.exe. Otherwise Windows loads whichever
+# libstdc++-6.dll comes first on the PATH, and a different GCC's copy (Git Bash ships one) crashes the program.
+if(MINGW)
+    target_link_options(viewer PRIVATE -static)
 endif()

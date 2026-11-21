@@ -17,6 +17,7 @@
 #include "Camera.h"
 #include "Model.h"
 #include "Shader.h"
+#include "HdrTarget.h"
 
 // Laptops with two GPUs: ask the driver for the discrete one (Windows only).
 #ifdef _WIN32
@@ -110,7 +111,11 @@ int main(int argc, char** argv)
     ImGui_ImplOpenGL3_Init("#version 460");
 
     GLuint pbrProgram = loadProgram(ASSET_DIR "shaders/pbr.vert", ASSET_DIR "shaders/pbr.frag");
-    if (!pbrProgram) return EXIT_FAILURE;
+    GLuint toneMapProgram = loadProgram(ASSET_DIR "shaders/fullscreen.vert", ASSET_DIR "shaders/tonemap.frag");
+    if (!pbrProgram || !toneMapProgram) return EXIT_FAILURE;
+
+    GLuint emptyVao = 0;   // core profile needs a VAO bound for every draw, even one with no vertex inputs
+    glCreateVertexArrays(1, &emptyVao);
 
     OrbitCamera camera;
     Model model;
@@ -118,6 +123,10 @@ int main(int argc, char** argv)
     if (!openModel(startModel, model, camera)) return EXIT_FAILURE;
 
     bool vsync = true;
+    int debugView = 0;
+    HdrTarget hdr;
+    int toneMapper = 0;
+    float exposureEV = 0.0f;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -154,27 +163,67 @@ int main(int argc, char** argv)
         if (ImGui::Button("DamagedHelmet")) openModel(ASSET_DIR "models/DamagedHelmet.glb", model, camera);
         ImGui::SameLine();
         if (ImGui::Button("MetalRoughSpheres")) openModel(ASSET_DIR "models/MetalRoughSpheres.glb", model, camera);
+        ImGui::Combo("View", &debugView, "Lit\0Base colour\0Metallic\0Roughness\0Normal\0Occlusion\0Emissive\0UV\0");
+        ImGui::SeparatorText("Camera");
+        ImGui::SliderFloat("Exposure (EV)", &exposureEV, -6.0f, 6.0f, "%.1f");
+        ImGui::Combo("Tone mapper", &toneMapper, "Khronos PBR Neutral\0ACES (Narkowicz)\0None (clamp)\0");
         ImGui::End();
 
+        // ---- Scene pass: draw the model into the HDR target in linear light ----
+        resizeHdrTarget(hdr, width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, hdr.fbo);
         glViewport(0, 0, width, height);
-        glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        const float clearColor[4] = {0.02f, 0.02f, 0.025f, 1.0f};
+        const float clearDepth = 1.0f;
+        glClearNamedFramebufferfv(hdr.fbo, GL_COLOR, 0, clearColor);
+        glClearNamedFramebufferfv(hdr.fbo, GL_DEPTH, 0, &clearDepth);
         glEnable(GL_DEPTH_TEST);
-        glEnable(GL_CULL_FACE);
 
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, "Scene");
         glUseProgram(pbrProgram);
         const glm::mat4 viewProj = camera.projection(float(width) / float(height)) * camera.view();
         glProgramUniformMatrix4fv(pbrProgram, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glProgramUniform1i(pbrProgram, 9, debugView);
 
         for (const Draw& draw : model.draws) {
             const Primitive& prim = model.primitives[draw.primitive];
+            const Material& mat = prim.material >= 0 ? model.materials[prim.material] : model.defaultMaterial;
             const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(draw.world)));
+
             glProgramUniformMatrix4fv(pbrProgram, 1, 1, GL_FALSE, glm::value_ptr(draw.world));
             glProgramUniformMatrix3fv(pbrProgram, 2, 1, GL_FALSE, glm::value_ptr(normalMatrix));
+            glProgramUniform4fv(pbrProgram, 3, 1, glm::value_ptr(mat.baseColorFactor));
+            glProgramUniform1f(pbrProgram, 4, mat.metallicFactor);
+            glProgramUniform1f(pbrProgram, 5, mat.roughnessFactor);
+            glProgramUniform3fv(pbrProgram, 6, 1, glm::value_ptr(mat.emissiveFactor));
+            glProgramUniform1f(pbrProgram, 7, mat.normalScale);
+            glProgramUniform1f(pbrProgram, 8, mat.occlusionStrength);
+
+            const GLuint textures[5] = {mat.baseColorTex, mat.metallicRoughnessTex, mat.normalTex, mat.occlusionTex,
+                                        mat.emissiveTex};
+            glBindTextures(0, 5, textures);   // units 0 to 4, matching the binding = N in pbr.frag
+
+            if (mat.doubleSided) glDisable(GL_CULL_FACE);
+            else glEnable(GL_CULL_FACE);
             glBindVertexArray(prim.vao);
             glDrawElements(GL_TRIANGLES, prim.indexCount, GL_UNSIGNED_INT, nullptr);
         }
+        glPopDebugGroup();
+
+        // ---- Tone-map pass: HDR target -> screen ----
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, "Tone map");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glUseProgram(toneMapProgram);
+        const bool colourView = debugView == 1 || debugView == 6;   // base colour and emissive are colours
+        const int mode = debugView == 0 ? 0 : (colourView ? 1 : 2);
+        glProgramUniform1f(toneMapProgram, 0, std::exp2(exposureEV));
+        glProgramUniform1i(toneMapProgram, 1, toneMapper);
+        glProgramUniform1i(toneMapProgram, 2, mode);
+        glBindTextureUnit(0, hdr.color);
+        glBindVertexArray(emptyVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
         glPopDebugGroup();
 
         ImGui::Render();
@@ -183,6 +232,9 @@ int main(int argc, char** argv)
     }
 
     destroyModel(model);
+    destroyHdrTarget(hdr);
+    glDeleteVertexArrays(1, &emptyVao);
+    glDeleteProgram(toneMapProgram);
     glDeleteProgram(pbrProgram);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
