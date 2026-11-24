@@ -141,14 +141,12 @@ int main(int argc, char** argv)
     GLuint backgroundProgram = loadProgram(ASSET_DIR "shaders/background.vert", ASSET_DIR "shaders/background.frag");
     if (!pbrProgram || !toneMapProgram || !backgroundProgram) return EXIT_FAILURE;
 
-    GLuint panorama = loadPanorama(ASSET_DIR "environments/Cannon_Exterior.hdr");
-    if (!panorama) return EXIT_FAILURE;
-    auto openPanorama = [&panorama](const std::string& path) {   // replaces the panorama only if the new one loads
-        if (GLuint loaded = loadPanorama(path)) {
-            glDeleteTextures(1, &panorama);
-            panorama = loaded;
-        }
-    };
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);   // filter across cube face edges instead of showing seams
+
+    IblPrograms iblPrograms;
+    if (!loadIblPrograms(iblPrograms)) return EXIT_FAILURE;
+    Environment environment;
+    if (!loadEnvironment(ASSET_DIR "environments/Cannon_Exterior.hdr", iblPrograms, environment)) return EXIT_FAILURE;
     EnvironmentSettings envSettings;
 
     GLuint emptyVao = 0;   // core profile needs a VAO bound for every draw, even one with no vertex inputs
@@ -175,7 +173,7 @@ int main(int argc, char** argv)
             continue;
         }
         if (!g_droppedFile.empty()) {
-            if (endsWith(g_droppedFile, ".hdr")) openPanorama(g_droppedFile);
+            if (endsWith(g_droppedFile, ".hdr")) loadEnvironment(g_droppedFile, iblPrograms, environment);
             else openModel(g_droppedFile, model, camera, lights);
             g_droppedFile.clear();
         }
@@ -208,9 +206,10 @@ int main(int argc, char** argv)
         ImGui::SliderFloat("Exposure (EV)", &exposureEV, -6.0f, 6.0f, "%.1f");
         ImGui::Combo("Tone mapper", &toneMapper, "Khronos PBR Neutral\0ACES (Narkowicz)\0None (clamp)\0");
         ImGui::SeparatorText("Environment");
-        if (ImGui::Button("Cannon Exterior")) openPanorama(ASSET_DIR "environments/Cannon_Exterior.hdr");
+        if (ImGui::Button("Cannon Exterior"))
+            loadEnvironment(ASSET_DIR "environments/Cannon_Exterior.hdr", iblPrograms, environment);
         ImGui::SameLine();
-        if (ImGui::Button("Studio Neutral")) openPanorama(ASSET_DIR "environments/neutral.hdr");
+        if (ImGui::Button("Studio Neutral")) loadEnvironment(ASSET_DIR "environments/neutral.hdr", iblPrograms, environment);
         ImGui::SliderFloat("Rotation", &envSettings.rotationDegrees, -180.0f, 180.0f, "%.0f deg");
         ImGui::SliderFloat("Intensity", &envSettings.intensity, 0.0f, 4.0f);
         ImGui::Checkbox("Background", &envSettings.showBackground);
@@ -283,7 +282,7 @@ int main(int argc, char** argv)
             glProgramUniformMatrix4fv(backgroundProgram, 0, 1, GL_FALSE, glm::value_ptr(invViewRotProj));
             glProgramUniformMatrix3fv(backgroundProgram, 1, 1, GL_FALSE, glm::value_ptr(envRotation));
             glProgramUniform1f(backgroundProgram, 2, envSettings.intensity);
-            glBindTextureUnit(0, panorama);
+            glBindTextureUnit(0, environment.cubemap);
             glDisable(GL_CULL_FACE);
             glDepthFunc(GL_LEQUAL);    // the far plane has depth 1.0, equal to the cleared depth
             glDepthMask(GL_FALSE);
@@ -316,7 +315,8 @@ int main(int argc, char** argv)
     }
 
     destroyModel(model);
-    glDeleteTextures(1, &panorama);
+    destroyEnvironment(environment);
+    destroyIblPrograms(iblPrograms);
     glDeleteProgram(backgroundProgram);
     destroyHdrTarget(hdr);
     glDeleteVertexArrays(1, &emptyVao);
