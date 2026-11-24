@@ -18,6 +18,7 @@
 #include "Model.h"
 #include "Shader.h"
 #include "HdrTarget.h"
+#include "Environment.h"
 
 // Laptops with two GPUs: ask the driver for the discrete one (Windows only).
 #ifdef _WIN32
@@ -67,6 +68,17 @@ struct Lights {
     float pointIntensity = 10.0f;
     float ambient = 0.3f;
 };
+
+struct EnvironmentSettings {
+    float rotationDegrees = 90.0f;   // 90 puts the panorama's centre at +Z, matching the Khronos Sample Viewer
+    float intensity = 1.0f;
+    bool showBackground = true;
+};
+
+static bool endsWith(const std::string& text, const std::string& suffix)
+{
+    return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
 
 // Loads a model and, only if that worked, replaces the current one and frames the camera on it.
 static bool openModel(const std::string& path, Model& model, OrbitCamera& camera, Lights& lights)
@@ -126,7 +138,18 @@ int main(int argc, char** argv)
 
     GLuint pbrProgram = loadProgram(ASSET_DIR "shaders/pbr.vert", ASSET_DIR "shaders/pbr.frag");
     GLuint toneMapProgram = loadProgram(ASSET_DIR "shaders/fullscreen.vert", ASSET_DIR "shaders/tonemap.frag");
-    if (!pbrProgram || !toneMapProgram) return EXIT_FAILURE;
+    GLuint backgroundProgram = loadProgram(ASSET_DIR "shaders/background.vert", ASSET_DIR "shaders/background.frag");
+    if (!pbrProgram || !toneMapProgram || !backgroundProgram) return EXIT_FAILURE;
+
+    GLuint panorama = loadPanorama(ASSET_DIR "environments/Cannon_Exterior.hdr");
+    if (!panorama) return EXIT_FAILURE;
+    auto openPanorama = [&panorama](const std::string& path) {   // replaces the panorama only if the new one loads
+        if (GLuint loaded = loadPanorama(path)) {
+            glDeleteTextures(1, &panorama);
+            panorama = loaded;
+        }
+    };
+    EnvironmentSettings envSettings;
 
     GLuint emptyVao = 0;   // core profile needs a VAO bound for every draw, even one with no vertex inputs
     glCreateVertexArrays(1, &emptyVao);
@@ -152,7 +175,8 @@ int main(int argc, char** argv)
             continue;
         }
         if (!g_droppedFile.empty()) {
-            openModel(g_droppedFile, model, camera, lights);
+            if (endsWith(g_droppedFile, ".hdr")) openPanorama(g_droppedFile);
+            else openModel(g_droppedFile, model, camera, lights);
             g_droppedFile.clear();
         }
 
@@ -174,7 +198,7 @@ int main(int argc, char** argv)
         ImGui::Begin("Viewer");
         ImGui::Text("%.1f fps (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
         if (ImGui::Checkbox("VSync", &vsync)) glfwSwapInterval(vsync ? 1 : 0);
-        ImGui::TextDisabled("Drop a .glb or .gltf file on the window to open it");
+        ImGui::TextDisabled("Drop a .glb, .gltf or .hdr file on the window to open it");
         if (ImGui::Button("DamagedHelmet")) openModel(ASSET_DIR "models/DamagedHelmet.glb", model, camera, lights);
         ImGui::SameLine();
         if (ImGui::Button("MetalRoughSpheres"))
@@ -183,6 +207,13 @@ int main(int argc, char** argv)
         ImGui::SeparatorText("Camera");
         ImGui::SliderFloat("Exposure (EV)", &exposureEV, -6.0f, 6.0f, "%.1f");
         ImGui::Combo("Tone mapper", &toneMapper, "Khronos PBR Neutral\0ACES (Narkowicz)\0None (clamp)\0");
+        ImGui::SeparatorText("Environment");
+        if (ImGui::Button("Cannon Exterior")) openPanorama(ASSET_DIR "environments/Cannon_Exterior.hdr");
+        ImGui::SameLine();
+        if (ImGui::Button("Studio Neutral")) openPanorama(ASSET_DIR "environments/neutral.hdr");
+        ImGui::SliderFloat("Rotation", &envSettings.rotationDegrees, -180.0f, 180.0f, "%.0f deg");
+        ImGui::SliderFloat("Intensity", &envSettings.intensity, 0.0f, 4.0f);
+        ImGui::Checkbox("Background", &envSettings.showBackground);
         ImGui::SeparatorText("Lights");
         ImGui::SliderAngle("Sun azimuth", &lights.sunAzimuth, -180.0f, 180.0f);
         ImGui::SliderAngle("Sun elevation", &lights.sunElevation, -90.0f, 90.0f);
@@ -207,6 +238,8 @@ int main(int argc, char** argv)
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, "Scene");
         glUseProgram(pbrProgram);
         const glm::mat4 viewProj = camera.projection(float(width) / float(height)) * camera.view();
+        const glm::mat3 envRotation =
+        glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(envSettings.rotationDegrees), glm::vec3(0, 1, 0)));
         glProgramUniformMatrix4fv(pbrProgram, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
         glProgramUniform1i(pbrProgram, 9, debugView);
         const glm::vec3 sunDir(std::cos(lights.sunElevation) * std::sin(lights.sunAzimuth), std::sin(lights.sunElevation),
@@ -241,6 +274,24 @@ int main(int argc, char** argv)
             glBindVertexArray(prim.vao);
             glDrawElements(GL_TRIANGLES, prim.indexCount, GL_UNSIGNED_INT, nullptr);
         }
+
+        // Background: drawn last, on the far plane, so it only fills pixels the model left empty.
+        if (debugView == 0 && envSettings.showBackground) {
+            const glm::mat4 viewRotation = glm::mat4(glm::mat3(camera.view()));   // no translation: the sky is infinitely far
+            const glm::mat4 invViewRotProj = glm::inverse(camera.projection(float(width) / float(height)) * viewRotation);
+            glUseProgram(backgroundProgram);
+            glProgramUniformMatrix4fv(backgroundProgram, 0, 1, GL_FALSE, glm::value_ptr(invViewRotProj));
+            glProgramUniformMatrix3fv(backgroundProgram, 1, 1, GL_FALSE, glm::value_ptr(envRotation));
+            glProgramUniform1f(backgroundProgram, 2, envSettings.intensity);
+            glBindTextureUnit(0, panorama);
+            glDisable(GL_CULL_FACE);
+            glDepthFunc(GL_LEQUAL);    // the far plane has depth 1.0, equal to the cleared depth
+            glDepthMask(GL_FALSE);
+            glBindVertexArray(emptyVao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glDepthMask(GL_TRUE);
+            glDepthFunc(GL_LESS);
+        }
         glPopDebugGroup();
 
         // ---- Tone-map pass: HDR target -> screen ----
@@ -265,6 +316,8 @@ int main(int argc, char** argv)
     }
 
     destroyModel(model);
+    glDeleteTextures(1, &panorama);
+    glDeleteProgram(backgroundProgram);
     destroyHdrTarget(hdr);
     glDeleteVertexArrays(1, &emptyVao);
     glDeleteProgram(toneMapProgram);

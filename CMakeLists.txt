@@ -15,6 +15,7 @@ add_executable(viewer
     src/Shader.cpp
     src/Texture.cpp
     src/HdrTarget.cpp
+    src/Environment.cpp
 )
 target_include_directories(viewer PRIVATE src)
 target_link_libraries(viewer PRIVATE glad glfw glm::glm imgui stb cgltf mikktspace)

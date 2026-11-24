@@ -1,5 +1,6 @@
 build/
 assets/models/
+assets/environments/
 out/
 .vs/
 .vscode/
